@@ -4,6 +4,11 @@ var inherits = require('util').inherits;
 var SerialPort = require("serialport");
 var Service, Characteristic;
 
+// Use a `\r\n` as a line terminator
+const parser = new SerialPort.parsers.Readline({
+                                    delimiter: '\r'
+                                    });
+
 // need to be global to be used in constructor
 var maxVolume;
 var minVolume;
@@ -32,12 +37,14 @@ module.exports = function(homebridge) {
         this.volume = minVolume;
         
         this.serialPort = new SerialPort(this.path, {
-                                         baudrate: 9600,
-                                         parser: SerialPort.parsers.readline("\r"),
+                                         baudRate: 9600,
                                          autoOpen: false
                                          }); // this is the openImmediately flag [default is true]
         
-        this.serialPort.on('data', function(data) {
+        this.serialPort.pipe(parser);
+        
+        parser.on('data', function(data) {
+                           
                            this.log("Received data: " + data);
                            this.serialPort.close(function(error) {
                                 this.log("Closing connection");
@@ -101,7 +108,7 @@ module.exports = function(homebridge) {
         
     sendCommand: function(command, callback) {
         this.log("serialPort.open");
-        if(this.serialPort.isOpen()){
+        if(this.serialPort.isOpen){
             this.log("serialPort is already open...");
             if(callback) callback(0,1);
         }
@@ -122,46 +129,6 @@ module.exports = function(homebridge) {
                              }.bind(this));
         }
     },
-        /*
-         sendCommand: function(command, callback) {
-         var that = this;
-         that.callback = callback;
-         
-         //if(that.serialPort.isOpen()) that.serialPort.close();
-         that.log("Opening connection");
-         that.serialPort.open(function (error, callback) {
-         if ( error ) {
-         that.log('failed to open: '+error);
-         if(callback) callback(0,1);
-         } else {
-         console.log('open and write command ' + command);
-         that.serialPort.on('data', function(data, callback) {
-         that.log("Received data: " + data);
-         if(that.serialPort.isOpen) {
-         that.serialPort.close(function(error,callback) {
-         that.log("Closing connection");
-         if(error) that.log("Error when closing connection: " + error)
-         if(that.callback) that.callback(data,0);
-         }); // close after response
-         }
-         else {
-         if(callback) callback(data,0);
-         }
-         });
-         that.serialPort.write(command, function(err, results) {
-         if(err) that.log("Write error = " + err);
-         that.serialPort.drain();
-         
-         //setTimeout(function () {
-         //    if(that.serialPort.isOpen()) that.serialPort.close(); // close after response
-         //    //callback(0,0);
-         //}, 1000);
-         //callback(results,err);
-         });
-         }
-         });
-         },
-         */
         
     process: function() {
         if (this.queue.length === 0) return;
@@ -337,9 +304,47 @@ module.exports = function(homebridge) {
         callback(null, 0);
     },
         
+    getVolumeUpFastState: function(callback) {
+        callback(null, 0);
+    },
+        
+    getVolumeDownFastState: function(callback) {
+        callback(null, 0);
+    },
+        
     setVolumeUpState: function(value, callback) {
         
+        var cmd = "@VOL:1\r";
+        
+        var signedValue = value;
+        this.setVolumeState(cmd, signedValue, callback);
+    },
+        
+    setVolumeDownState: function(value, callback) {
+        
+        var cmd = "@VOL:2\r";
+        
+        var signedValue = -1 * value;
+        this.setVolumeState(cmd, signedValue, callback);
+    },
+
+    setVolumeUpFastState: function(value, callback) {
+        
         var cmd = "@VOL:3\r";
+        
+        var signedValue = value;
+        this.setVolumeState(cmd, signedValue, callback);
+    },
+        
+    setVolumeDownFastState: function(value, callback) {
+        
+        var cmd = "@VOL:4\r";
+        
+        var signedValue = -1 * value;
+        this.setVolumeState(cmd, signedValue, callback);
+    },
+        
+    setVolumeState: function(cmd, value, callback) {
         
         if(value == 0) {
             this.log("Resetting volume up/down button");
@@ -347,6 +352,10 @@ module.exports = function(homebridge) {
         }
         else if(value > 0 && this.volume >= 100) {
             this.log("Maximum volume reached");
+            callback(); // limit the volume
+        }
+        else if(value < 0 && this.volume <= 0) {
+            this.log("Minumum volume reached");
             callback(); // limit the volume
         }
         else {
@@ -362,39 +371,6 @@ module.exports = function(homebridge) {
                     var tagetChar = this.volumeUpSwitchService.getCharacteristic(Characteristic.On);
                     var targetCharVol = this.speakerService.getCharacteristic(Characteristic.Volume);
 
-                    targetCharVol.getValue(null);
-                    setTimeout(function(){tagetChar.setValue(0);}, 10);
-                    callback();
-                }
-            }.bind(this));
-        }
-    },
-
-    setVolumeDownState: function(value, callback) {
-        
-        var cmd = "@VOL:4\r";
-        
-        if(value == 0) {
-            this.log("Resetting volume up/down button");
-            callback();
-        }
-        else if(value > 0 && this.volume <= 0) {
-            this.log("Minumum volume reached");
-            callback(); // limit the volume
-        }
-        else {
-            this.log('Executing: ' + cmd);
-            
-            this.exec(cmd, function(response, error) {
-                if (error) {
-                    this.log('Serial increase volume function failed: ' + error);
-                    callback(error);
-                }
-                else {
-                    this.log("Changing volume");
-                    var tagetChar = this.volumeDownSwitchService.getCharacteristic(Characteristic.On);
-                    var targetCharVol = this.speakerService.getCharacteristic(Characteristic.Volume);
-                    
                     targetCharVol.getValue(null);
                     setTimeout(function(){tagetChar.setValue(0);}, 10);
                     callback();
@@ -427,7 +403,7 @@ module.exports = function(homebridge) {
         var cmd = "@SRC:?\r";
         
         this.exec(cmd, function(response, error) {
-                  
+
             //SRC:xx
             if(response && response.indexOf("@SRC:") > -1) {
                   
@@ -550,8 +526,24 @@ module.exports = function(homebridge) {
         .on('set', this.setVolumeDownState.bind(this));
         
         this.volumeDownSwitchService = volumeDownSwitchService;
- 
-        return [informationService, switchService, speakerService, volumeUpSwitchService, volumeDownSwitchService];
+
+        var volumeUpFastSwitchService = new Service.Switch("Volume Up Fast", "volume_up_fast");
+        volumeUpFastSwitchService
+        .getCharacteristic(Characteristic.On)
+        .on('get', this.getVolumeUpFastState.bind(this))
+        .on('set', this.setVolumeUpFastState.bind(this));
+        
+        this.volumeUpFastSwitchService = volumeUpFastSwitchService;
+        
+        var volumeDownFastSwitchService = new Service.Switch("Volume Down Fast", "volume_down_fast");
+        volumeDownFastSwitchService
+        .getCharacteristic(Characteristic.On)
+        .on('get', this.getVolumeDownFastState.bind(this))
+        .on('set', this.setVolumeDownFastState.bind(this));
+        
+        this.volumeDownFastSwitchService = volumeDownFastSwitchService;
+        
+        return [informationService, switchService, speakerService, volumeUpSwitchService, volumeDownSwitchService, volumeUpFastSwitchService, volumeDownFastSwitchService];
     }
     }
 };
